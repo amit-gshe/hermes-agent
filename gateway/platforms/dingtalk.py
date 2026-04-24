@@ -824,11 +824,12 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         logger.debug("[%s] Sending via webhook", self.name)
         # Normalize markdown for DingTalk
+        title = self._normalize_markdown(content[: 64])
         normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
 
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
+            "markdown": {"title": title, "text": normalized},
         }
 
         try:
