@@ -1820,6 +1820,7 @@ def select_provider_and_model(args=None):
         "gmi",
         "nvidia",
         "ollama-cloud",
+        "tencent-tokenhub",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -4731,7 +4732,6 @@ def _model_flow_anthropic(config, current_model=""):
             read_claude_code_credentials,
             is_claude_code_token_valid,
             _is_oauth_token,
-            _resolve_claude_code_token_from_credentials,
         )
 
         cc_creds = read_claude_code_credentials()
@@ -7136,7 +7136,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
-                                    retry = subprocess.run(
+                                    subprocess.run(
                                         scope_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
