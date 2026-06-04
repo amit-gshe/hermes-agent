@@ -227,9 +227,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits.  systemd relaunches clean exits via
-    ``Restart=always``; launchd still uses a non-zero planned-restart exit
-    because its plist has ``KeepAlive.SuccessfulExit = false``.
+    seconds), then exits.  Both systemd (``Restart=always``) and launchd
+    (unconditional ``<key>KeepAlive</key><true/>``) restart on any exit.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -453,11 +452,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         if pid == my_pid or pid in exclude_pids:
                             continue
                         try:
-                            cmdline = (
-                                open(f"/proc/{pid}/cmdline", "rb")
-                                .read()
-                                .decode("utf-8", errors="replace")
-                            )
+                            with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                                cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
                             cmdline_lc = cmdline.lower()
                             if any(p in cmdline_lc for p in patterns) and (
@@ -3086,10 +3082,7 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3252,7 +3245,7 @@ def launchd_stop():
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
