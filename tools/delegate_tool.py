@@ -2071,6 +2071,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2078,13 +2079,16 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'model' parameter specifies which model the subagent should use.
+    Priority: per-task model > top-level model > delegation.model config > parent.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2220,12 +2224,15 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Model priority: per-task > top-level > config > parent
+            # per-task 'model' overrides everything; top-level 'model' beats config.
+            task_model = t.get("model") or model or creds["model"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2307,7 +2314,7 @@ def delegate_task(
                 context=_t.get("context"),
                 toolsets=_t.get("toolsets") or toolsets,
                 role=_normalize_role(_t.get("role") or top_role),
-                model=creds["model"],
+                model=_t.get("model") or model or creds["model"],
                 session_key=_session_key,
                 runner=_async_runner,
                 interrupt_fn=_async_interrupt,
@@ -3042,6 +3049,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. When set, this task's "
+                                "subagent uses the specified model, overriding both "
+                                "top-level 'model' and delegation.model from config. "
+                                "Example: 'gpt-4o-mini' for cheap tasks, 'claude-3-5-sonnet' for heavy reasoning."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3054,6 +3070,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model for the subagent. When set, overrides delegation.model "
+                    "from config. If not set, subagent inherits from config or parent. "
+                    "Per-task model (in tasks array) takes precedence over this. "
+                    "Example: 'gpt-4o-mini', 'claude-3-5-sonnet'."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3117,6 +3142,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         background=args.get("background"),
         parent_agent=kw.get("parent_agent"),
     ),

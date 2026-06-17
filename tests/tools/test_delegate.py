@@ -2036,6 +2036,94 @@ class TestDispatchDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
+    # ------------------------------------------------------------------
+    # Regression: _dispatch_delegate_task (run_agent.py) is the real
+    # runtime entry point — it bypasses the registry handler lambda.
+    # If any DELEGATE_TASK_SCHEMA field is added without being forwarded
+    # here, that field silently becomes None at runtime. The docstring on
+    # _dispatch_delegate_task claims it is the "single call site" — these
+    # tests guard that contract.
+    #
+    # Real bug this caught: top-level ``model`` was forwarded by the
+    # registry handler lambda but missing from _dispatch_delegate_task,
+    # so ``delegate_task(model="X")`` ran the child on the parent's model.
+    # ------------------------------------------------------------------
+
+    def _invoke_dispatch(self, function_args, model_arg_capture):
+        """Drive AIAgent._dispatch_delegate_task without building a real agent.
+
+        Patches the underlying ``tools.delegate_tool.delegate_task`` and
+        returns the kwargs it received.
+        """
+        from run_agent import AIAgent
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return '{"results": []}'
+
+        with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+            fake_self = MagicMock()
+            AIAgent._dispatch_delegate_task(fake_self, function_args)
+        model_arg_capture.update(captured)
+
+    def test_dispatch_forwards_top_level_model(self):
+        """Regression: top-level ``model`` in tool args reaches delegate_task.
+
+        Before fix: _dispatch_delegate_task dropped ``model`` silently, so the
+        subagent ran on the parent's model regardless of what the LLM passed.
+        """
+        captured = {}
+        self._invoke_dispatch(
+            {"goal": "hello", "model": "kimi-k2.6"},
+            captured,
+        )
+        self.assertEqual(captured.get("model"), "kimi-k2.6")
+        self.assertEqual(captured.get("goal"), "hello")
+
+    def test_dispatch_forwards_per_task_model_via_tasks_array(self):
+        """Per-task model in the tasks array survives the dispatch hop.
+
+        The tasks array is forwarded as one dict; this just guards against a
+        future refactor that unpacks tasks at the dispatch layer.
+        """
+        captured = {}
+        self._invoke_dispatch(
+            {"tasks": [{"goal": "a", "model": "glm-5.1"}]},
+            captured,
+        )
+        self.assertEqual(captured.get("tasks"), [{"goal": "a", "model": "glm-5.1"}])
+
+    def test_dispatch_forwards_all_schema_fields(self):
+        """Every top-level field in DELEGATE_TASK_SCHEMA must reach delegate_task.
+
+        This is the cheap sweep that would have caught the model-dropping bug
+        immediately. If you add a new top-level field to the schema, add it to
+        the inputs dict below and the matching assertion — and ensure the new
+        field is forwarded in _dispatch_delegate_task.
+        """
+        inputs = {
+            "goal": "g",
+            "context": "c",
+            "toolsets": ["file"],
+            "tasks": None,
+            "max_iterations": 7,
+            "acp_command": "claude",
+            "acp_args": ["--stdio"],
+            "role": "orchestrator",
+            "model": "glm-5",
+            "background": False,
+        }
+        captured = {}
+        self._invoke_dispatch(inputs, captured)
+        for key, expected in inputs.items():
+            self.assertEqual(
+                captured.get(key),
+                expected,
+                f"_dispatch_delegate_task dropped {key!r}: "
+                f"got {captured.get(key)!r}, expected {expected!r}",
+            )
+
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
 
