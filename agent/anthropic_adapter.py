@@ -474,30 +474,28 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
-    """Return True for any Kimi / Moonshot Anthropic-Messages-speaking endpoint.
+    """Return True for Kimi / Moonshot official Anthropic-Messages-speaking endpoints.
 
-    Broader than ``_is_kimi_coding_endpoint`` — matches:
+    Matches:
 
-    - Kimi's official ``/coding`` URL (legacy check, preserved)
+    - Kimi's official ``/coding`` URL (requires claude-code UA)
     - Any ``api.kimi.com`` / ``moonshot.ai`` / ``moonshot.cn`` host
-    - Custom or proxied endpoints whose *model* name is in the Kimi / Moonshot
-      family (``kimi-*``, ``moonshot-*``, ``k1.*``, ``k2.*``, …).  Users with
-      ``api_mode: anthropic_messages`` on a private gateway fronting Kimi
-      fall into this branch — the upstream still enforces Kimi's thinking
-      semantics (reasoning_content required on every replayed tool-call
-      message) regardless of the gateway's hostname.
 
     Used to decide whether to drop Anthropic's ``thinking`` kwarg and to
     preserve unsigned reasoning_content-derived thinking blocks on replay.
     See hermes-agent#13848, #17057.
+
+    Note: Model-name-based detection was removed because it caused false
+    positives for custom gateways using model names that happen to match
+    Kimi family prefixes (e.g., ``kimi-k2.6`` on a non-Kimi backend).
+    Custom gateways should NOT be treated as Kimi endpoints unless they
+    use Kimi's official domain. See hermes-agent issue discussion for context.
     """
     if _is_kimi_coding_endpoint(base_url):
         return True
     for _domain in ("api.kimi.com", "moonshot.ai", "moonshot.cn"):
         if base_url_host_matches(base_url or "", _domain):
             return True
-    if _model_name_is_kimi_family(model):
-        return True
     return False
 
 
