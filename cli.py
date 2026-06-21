@@ -3267,6 +3267,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         max_turns: int = None,
         verbose: Optional[bool] = None,
         compact: bool = False,
+        quiet: bool = False,
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
@@ -3284,17 +3285,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
             verbose: Enable verbose logging
             compact: Use compact display mode
+            quiet: Suppress banner, spinner, and tool previews (quiet mode)
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
+        self.quiet = quiet
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
+        # Quiet mode: also suppress tool progress
+        if self.quiet:
+            self.tool_progress_mode = "off"
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
@@ -5341,6 +5347,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        # Quiet mode: skip banner entirely
+        if self.quiet:
+            return
+        
         self.console.clear()
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
@@ -14525,6 +14535,7 @@ def main(
         max_turns=max_turns,
         verbose=verbose,
         compact=compact,
+        quiet=quiet,
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
