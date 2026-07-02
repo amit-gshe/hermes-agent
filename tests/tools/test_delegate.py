@@ -2341,6 +2341,9 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
         with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
             fake_self = MagicMock()
+            # Set _delegate_depth to 0 so getattr(self, "_delegate_depth", 0) > 0
+            # returns a bool, not a MagicMock (which would cause TypeError).
+            fake_self._delegate_depth = 0
             AIAgent._dispatch_delegate_task(fake_self, function_args)
         model_arg_capture.update(captured)
 
@@ -2378,18 +2381,22 @@ class TestDispatchDelegateTask(unittest.TestCase):
         immediately. If you add a new top-level field to the schema, add it to
         the inputs dict below and the matching assertion — and ensure the new
         field is forwarded in _dispatch_delegate_task.
+
+        Note: 'toolsets' is intentionally NOT forwarded (removed in #56386).
+        Subagents always inherit the parent's toolsets; the model cannot
+        choose or narrow them.
         """
         inputs = {
             "goal": "g",
             "context": "c",
-            "toolsets": ["file"],
+            # 'toolsets' removed — subagents inherit parent's toolsets (#56386)
             "tasks": None,
             "max_iterations": 7,
             "acp_command": "claude",
             "acp_args": ["--stdio"],
             "role": "orchestrator",
             "model": "glm-5",
-            "background": False,
+            # 'background' intentionally ignored — computed from _is_subagent
         }
         captured = {}
         self._invoke_dispatch(inputs, captured)
