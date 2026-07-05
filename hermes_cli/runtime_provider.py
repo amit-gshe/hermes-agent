@@ -495,12 +495,39 @@ def _resolve_runtime_from_pool_entry(
         elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
         else:
+            # For custom:* providers, the user may set api_mode inside the
+            # custom_providers entry (custom_providers[].api_mode) rather than
+            # at the model level (model.api_mode).  Read it from there so the
+            # correct wire protocol (anthropic_messages, codex_responses, etc.)
+            # is used.  Without this, a custom provider configured with
+            # api_mode: anthropic_messages defaults to chat_completions,
+            # causing the wrong API format to be sent to the endpoint.
+            if not configured_mode and provider and provider.startswith("custom:"):
+                _cp_name = provider.split(":", 1)[1].strip() if ":" in provider else ""
+                if _cp_name:
+                    try:
+                        from hermes_cli.config import load_config, get_compatible_custom_providers
+                        _cfg = load_config()
+                        _cp_entries = get_compatible_custom_providers(_cfg)
+                        for _cp_entry in _cp_entries or []:
+                            if not isinstance(_cp_entry, dict):
+                                continue
+                            _entry_name = str(_cp_entry.get("name", "") or "").strip().lower()
+                            if _entry_name != _cp_name:
+                                continue
+                            _cp_api_mode = str(_cp_entry.get("api_mode", "") or "").strip()
+                            if _cp_api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+                                api_mode = _cp_api_mode
+                            break
+                    except Exception:
+                        pass
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
             # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            if api_mode == "chat_completions":
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize

@@ -704,7 +704,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     assert gateway_prov is not None, "Custom provider group not found in results"
     assert calls == [
-        ("sk-gateway-key", "https://gateway.example.com/v1", {"headers": None})
+        ("sk-gateway-key", "https://gateway.example.com/v1", {"api_mode": None, "headers": None})
     ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
@@ -759,6 +759,7 @@ def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
             "local-key",
             "http://localhost:8081/v1",
             {
+                "api_mode": None,
                 "headers": {
                     "sleeve-harness": "hermes",
                     "sleeve-base-url": "http://localhost:8081/v1",

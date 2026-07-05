@@ -569,6 +569,30 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
         if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
 
+    # For custom:* providers, read api_mode from the custom_providers config
+    # entry.  The user may set api_mode there rather than at the model level
+    # (model.api_mode), and the URL alone may not auto-detect the correct mode
+    # (e.g. an Anthropic-compatible proxy served at a bare domain).
+    if provider and provider.startswith("custom:"):
+        _cp_name = provider.split(":", 1)[1].strip() if ":" in provider else ""
+        if _cp_name:
+            try:
+                from hermes_cli.config import load_config, get_compatible_custom_providers
+                _cfg = load_config()
+                _cp_entries = get_compatible_custom_providers(_cfg)
+                for _cp_entry in _cp_entries or []:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _entry_name = str(_cp_entry.get("name", "") or "").strip().lower()
+                    if _entry_name != _cp_name:
+                        continue
+                    _cp_api_mode = str(_cp_entry.get("api_mode", "") or "").strip()
+                    if _cp_api_mode in {"anthropic_messages", "codex_responses", "bedrock_converse", "codex_app_server"}:
+                        return _cp_api_mode
+                    break
+            except Exception:
+                pass
+
     return "chat_completions"
 
 

@@ -2772,13 +2772,20 @@ def create_anthropic_message(
                 return stream.get_final_message()
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
-                raise
-            logger.debug(
-                "%sAnthropic Messages stream unavailable; falling back to "
-                "messages.create(): %s",
-                log_prefix,
-                exc,
-            )
+                # Some Anthropic-compatible gateways (e.g. claude-code-hub)
+                # return SSE events that the SDK's streaming accumulator
+                # cannot parse (AttributeError: 'NoneType' object has no
+                # attribute 'append' in accumulate_event).  Fall back to
+                # the non-streaming messages.create() path, which handles
+                # the same gateway correctly.
+                if not isinstance(exc, (AttributeError, TypeError)):
+                    raise
+                logger.debug(
+                    "%sAnthropic Messages stream response parse error; "
+                    "falling back to messages.create(): %s",
+                    log_prefix,
+                    exc,
+                )
 
     create_kwargs = dict(api_kwargs)
     create_kwargs.pop("stream", None)

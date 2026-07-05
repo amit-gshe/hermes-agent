@@ -2006,9 +2006,11 @@ def list_authenticated_providers(
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
+                    _ep_api_mode = str(ep_cfg.get("api_mode") or "").strip().lower() or None
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
+                        api_mode=_ep_api_mode,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
@@ -2019,7 +2021,7 @@ def list_authenticated_providers(
             results.append({
                 "slug": ep_name,
                 "name": display_name,
-                "is_current": ep_name == current_provider,
+                "is_current": ep_name.lower() == current_provider.lower() if current_provider else False,
                 "is_user_defined": True,
                 "models": models_list,
                 "total_models": len(models_list) if models_list else 0,
@@ -2154,6 +2156,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
+                    "api_mode": api_mode,
                     "models": [],
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
@@ -2270,9 +2273,11 @@ def list_authenticated_providers(
                 try:
                     from hermes_cli.models import fetch_api_models
 
+                    _grp_api_mode = grp.get("api_mode") or None
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
+                        api_mode=_grp_api_mode,
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
@@ -2283,8 +2288,8 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider or (
-                    current_provider == "custom"
+                "is_current": slug.lower() == (current_provider or "").lower() or (
+                    (current_provider or "").lower() == "custom"
                     and bool(_current_base_url_norm)
                     and _grp_url_norm == _current_base_url_norm
                     and _current_base_url_group_count == 1
