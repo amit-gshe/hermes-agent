@@ -2756,37 +2756,155 @@ def create_anthropic_message(
     Some Anthropic-compatible gateways are SSE-only: they ignore non-streaming
     requests and return ``text/event-stream`` even for ``messages.create()``.
     The SDK can surface that as raw text, so callers that expect a Message then
-    crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
-    match the main turn path, falling back to ``create()`` only for providers
-    that explicitly do not support streaming, such as restricted Bedrock roles.
+    crash on ``.content``.  Prefer streaming to match the main turn path.
+
+    Additionally, some Anthropic-compatible gateways (e.g. claude-code-hub)
+    return malformed ``message_start`` events where ``message.content`` is
+    ``None`` instead of an empty list. This triggers ``AttributeError:
+    'NoneType' object has no attribute 'append'`` in the SDK's
+    ``accumulate_event`` function. We preprocess events to defensively
+    initialize ``content`` to an empty list after ``message_start``, which
+    fixes the streaming accumulator without falling back to non-streaming.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
     messages_api = getattr(client, "messages", None)
-    stream_fn = getattr(messages_api, "stream", None)
-    if prefer_stream and callable(stream_fn):
-        stream_kwargs = dict(api_kwargs)
-        stream_kwargs.pop("stream", None)
-        try:
-            with stream_fn(**stream_kwargs) as stream:
-                return stream.get_final_message()
-        except Exception as exc:
-            if not _is_stream_unavailable_error(exc):
-                # Some Anthropic-compatible gateways (e.g. claude-code-hub)
-                # return SSE events that the SDK's streaming accumulator
-                # cannot parse (AttributeError: 'NoneType' object has no
-                # attribute 'append' in accumulate_event).  Fall back to
-                # the non-streaming messages.create() path, which handles
-                # the same gateway correctly.
-                if not isinstance(exc, (AttributeError, TypeError)):
-                    raise
-                logger.debug(
-                    "%sAnthropic Messages stream response parse error; "
-                    "falling back to messages.create(): %s",
-                    log_prefix,
-                    exc,
-                )
 
+    if prefer_stream:
+        # Use custom streaming logic with defensive event preprocessing
+        # to handle malformed message_start events from third-party gateways.
+        try:
+            return _stream_anthropic_message_with_fix(messages_api, api_kwargs, log_prefix)
+        except Exception as exc:
+            if _is_stream_unavailable_error(exc):
+                # Provider explicitly doesn't support streaming; fall back
+                pass
+            else:
+                raise
+
+    # Fallback to non-streaming create() (for providers that don't support streaming)
     create_kwargs = dict(api_kwargs)
     create_kwargs.pop("stream", None)
     return messages_api.create(**create_kwargs)
+
+
+def _stream_anthropic_message_with_fix(
+    messages_api: Any,
+    api_kwargs: dict,
+    log_prefix: str,
+) -> Any:
+    """Stream an Anthropic message with defensive content field fixing.
+
+    Some Anthropic-compatible gateways (claude-code-hub) return malformed
+    ``message_start`` events where ``message.content`` is ``None``. The SDK's
+    ``accumulate_event`` creates a ``ParsedMessage`` with ``content=None``,
+    which triggers ``AttributeError`` on subsequent ``content_block_start``
+    events when it tries to ``.append()`` to ``None``.
+
+    We fix this by checking after ``message_start`` and defensively
+    initializing ``content`` to an empty list if it is ``None``. This
+    preserves streaming behavior and avoids fallback to non-streaming.
+
+    Returns the final accumulated ``ParsedMessage`` (compatible with ``Message``).
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError("anthropic SDK not available")
+
+    # Import SDK internals for custom event accumulation
+    try:
+        from anthropic.lib.streaming._messages import accumulate_event
+        from anthropic._types import NOT_GIVEN
+    except ImportError as e:
+        logger.debug(
+            "%sFailed to import accumulate_event from anthropic SDK; "
+            "falling back to messages.stream(): %s",
+            log_prefix,
+            e,
+        )
+        # Fallback to SDK's stream() method if internals are not available
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        with messages_api.stream(**stream_kwargs) as stream:
+            return stream.get_final_message()
+
+    stream_kwargs = dict(api_kwargs)
+    stream_kwargs.pop("stream", None)
+    stream_kwargs["stream"] = True
+
+    # Use messages.create(stream=True) to get raw SSE stream
+    raw_stream = messages_api.create(**stream_kwargs)
+
+    current_snapshot = None
+
+    for event in raw_stream:
+        # Defensive preprocessing BEFORE accumulate_event:
+        # Some gateways return malformed content_block_start events with
+        # text=None or thinking=None, which causes TypeError in accumulate_event
+        # when it tries to do content.text += delta.text later.
+        event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+        if event_type == "content_block_start":
+            content_block = getattr(event, "content_block", None) or (event.get("content_block") if isinstance(event, dict) else None)
+            if content_block:
+                block_type = getattr(content_block, "type", None) or (content_block.get("type") if isinstance(content_block, dict) else None)
+                if block_type == "text":
+                    text_val = getattr(content_block, "text", None) or (content_block.get("text") if isinstance(content_block, dict) else None)
+                    if text_val is None:
+                        logger.debug("%sDefensively setting text=\"\" on malformed content_block_start event", log_prefix)
+                        if hasattr(content_block, "text"):
+                            content_block.text = ""
+                        elif isinstance(content_block, dict):
+                            content_block["text"] = ""
+                elif block_type == "thinking":
+                    thinking_val = getattr(content_block, "thinking", None) or (content_block.get("thinking") if isinstance(content_block, dict) else None)
+                    if thinking_val is None:
+                        logger.debug("%sDefensively setting thinking=\"\" on malformed content_block_start event", log_prefix)
+                        if hasattr(content_block, "thinking"):
+                            content_block.thinking = ""
+                        elif isinstance(content_block, dict):
+                            content_block["thinking"] = ""
+
+        # Process event through SDK's accumulator
+        current_snapshot = accumulate_event(
+            event=event,
+            current_snapshot=current_snapshot,
+            output_format=NOT_GIVEN,
+        )
+
+        # Defensive fix: ensure content is a list after message_start
+        # (some gateways return message_start with content=None)
+        # Use getattr to handle both dict and object event types
+        event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+        if event_type == "message_start" and current_snapshot is not None:
+            if getattr(current_snapshot, "content", None) is None:
+                logger.debug(
+                    "%sDefensively initializing content=[] on malformed "
+                    "message_start event (content was None)",
+                    log_prefix,
+                )
+                current_snapshot.content = []
+
+        # Defensive fix: ensure text/thinking fields are not None after content_block_start
+        # (some gateways return content_block_start with text=None or thinking=None)
+        if event_type == "content_block_start" and current_snapshot is not None:
+            content_list = getattr(current_snapshot, "content", None)
+            if content_list and len(content_list) > 0:
+                # Get the last content block (the one just added by accumulate_event)
+                last_block = content_list[-1]
+                block_type = getattr(last_block, "type", None)
+                if block_type == "text" and getattr(last_block, "text", None) is None:
+                    logger.debug(
+                        "%sDefensively initializing text="" on malformed "
+                        "content_block_start event (text was None)",
+                        log_prefix,
+                    )
+                    last_block.text = ""
+                elif block_type == "thinking" and getattr(last_block, "thinking", None) is None:
+                    logger.debug(
+                        "%sDefensively initializing thinking="" on malformed "
+                        "content_block_start event (thinking was None)",
+                        log_prefix,
+                    )
+                    last_block.thinking = ""
+
+    return current_snapshot

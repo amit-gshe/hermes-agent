@@ -2387,6 +2387,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         the native Anthropic Message object from get_final_message() so
         the rest of the agent loop (validation, tool extraction, etc.)
         works unchanged.
+
+        Some Anthropic-compatible gateways (claude-code-hub) return malformed
+        ``message_start`` events where ``message.content`` is ``None`` instead
+        of an empty list. The SDK's ``accumulate_event`` creates a
+        ``ParsedMessage`` with ``content=None``, which triggers ``AttributeError``
+        on subsequent ``content_block_start`` events. We fix this by using
+        a custom streaming loop that defensively initializes ``content`` to
+        ``[]`` after ``message_start``, preserving streaming behavior.
         """
         has_tool_use = False
 
@@ -2403,15 +2411,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
+
+        # Use custom streaming loop with defensive content fix instead of
+        # the SDK's messages.stream() which doesn't handle malformed events.
         _ant_stream_kwargs = dict(api_kwargs)
         _ant_stream_kwargs.pop("stream", None)
+        _ant_stream_kwargs["stream"] = True
+
+        # Import SDK internals for custom event accumulation
         try:
+            from anthropic.lib.streaming._messages import accumulate_event
+            from anthropic._types import NOT_GIVEN
+        except ImportError as e:
+            # Fallback to SDK's stream() if internals are not available
+            logger.debug(
+                "%sFailed to import accumulate_event; using SDK stream(): %s",
+                getattr(agent, "log_prefix", ""),
+                e,
+            )
             with agent._anthropic_client.messages.stream(**_ant_stream_kwargs) as stream:
-                # The Anthropic SDK exposes the raw httpx response on
-                # ``stream.response``.  Snapshot diagnostic headers
-                # immediately so they survive a stream that dies before the
-                # first event.
                 try:
                     agent._stream_diag_capture_response(
                         _diag, getattr(stream, "response", None)
@@ -2419,32 +2437,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 except Exception:
                     pass
                 for event in stream:
-                    # Update stale-stream timer on every event so the
-                    # outer poll loop knows data is flowing.  Without
-                    # this, the detector kills healthy long-running
-                    # Opus streams after 180 s even when events are
-                    # actively arriving (the chat_completions path
-                    # already does this at the top of its chunk loop).
                     last_chunk_time["t"] = time.time()
                     agent._touch_activity("receiving stream response")
-
-                    # Update per-attempt diagnostic counters (best-effort).
                     try:
                         _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                         if _diag.get("first_chunk_at") is None:
                             _diag["first_chunk_at"] = last_chunk_time["t"]
-                        try:
-                            _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
-                        except Exception:
-                            pass
+                        _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
                     except Exception:
                         pass
-
                     if agent._interrupt_requested:
                         break
-
                     event_type = getattr(event, "type", None)
-
                     if event_type == "content_block_start":
                         block = getattr(event, "content_block", None)
                         if block and getattr(block, "type", None) == "tool_use":
@@ -2453,7 +2457,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             if tool_name:
                                 _fire_first_delta()
                                 agent._fire_tool_gen_started(tool_name)
-
                     elif event_type == "content_block_delta":
                         delta = getattr(event, "delta", None)
                         if delta:
@@ -2469,39 +2472,117 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 if thinking_text:
                                     _fire_first_delta()
                                     agent._fire_reasoning_delta(thinking_text)
-
-                # Return the native Anthropic Message for downstream processing.
-                # If the stream was interrupted (the event loop broke out above on
-                # agent._interrupt_requested), do NOT call get_final_message() — on
-                # a partially-consumed stream the SDK may hang draining remaining
-                # events or return a Message with incomplete tool_use blocks (partial
-                # JSON in `input`). The outer poll loop raises InterruptedError, so
-                # this return value is discarded anyway.
                 if agent._interrupt_requested:
                     return None
                 return stream.get_final_message()
-        except (AttributeError, TypeError) as exc:
-            # Some Anthropic-compatible gateways (e.g. claude-code-hub)
-            # return SSE events that the SDK's streaming accumulator
-            # cannot parse (AttributeError: 'NoneType' object has no
-            # attribute 'append' in accumulate_event).  Fall back to
-            # the non-streaming messages.create() path.
-            #
-            # Only fallback if no deltas were sent yet — otherwise the
-            # user would see duplicate/inconsistent content.
-            if deltas_were_sent["yes"]:
-                # Already sent partial content; let error propagate to
-                # the outer retry loop which will handle it.
-                raise
-            logger.debug(
-                "%sAnthropic Messages stream response parse error; "
-                "falling back to messages.create(): %s",
-                getattr(agent, "log_prefix", ""),
-                exc,
+
+        # Custom streaming loop with defensive content fix
+        raw_stream = agent._anthropic_client.messages.create(**_ant_stream_kwargs)
+
+        # Capture diagnostic headers from the raw httpx response
+        try:
+            agent._stream_diag_capture_response(
+                _diag, getattr(raw_stream, "response", None)
             )
-            _ant_create_kwargs = dict(api_kwargs)
-            _ant_create_kwargs.pop("stream", None)
-            return agent._anthropic_client.messages.create(**_ant_create_kwargs)
+        except Exception:
+            pass
+
+        current_snapshot = None
+
+        for event in raw_stream:
+            # Update stale-stream timer on every event
+            last_chunk_time["t"] = time.time()
+            agent._touch_activity("receiving stream response")
+
+            # Update diagnostic counters
+            try:
+                _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                if _diag.get("first_chunk_at") is None:
+                    _diag["first_chunk_at"] = last_chunk_time["t"]
+                _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
+            except Exception:
+                pass
+
+            if agent._interrupt_requested:
+                break
+
+            # Process event through SDK's accumulator
+            current_snapshot = accumulate_event(
+                event=event,
+                current_snapshot=current_snapshot,
+                output_format=NOT_GIVEN,
+            )
+
+            # Defensive fix: ensure content is a list after message_start
+            # (some gateways return message_start with content=None)
+            # Use getattr to handle both dict and object event types
+            event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+            if event_type == "message_start" and current_snapshot is not None:
+                if getattr(current_snapshot, "content", None) is None:
+                    logger.debug(
+                        "%sDefensively initializing content=[] on malformed "
+                        "message_start event (content was None)",
+                        getattr(agent, "log_prefix", ""),
+                    )
+                    current_snapshot.content = []
+
+            # Defensive fix: ensure text/thinking fields are not None after content_block_start
+            # (some gateways return content_block_start with text=None or thinking=None)
+            if event_type == "content_block_start" and current_snapshot is not None:
+                content_list = getattr(current_snapshot, "content", None)
+                if content_list and len(content_list) > 0:
+                    # Get the last content block (the one just added by accumulate_event)
+                    last_block = content_list[-1]
+                    block_type = getattr(last_block, "type", None)
+                    if block_type == "text" and getattr(last_block, "text", None) is None:
+                        logger.debug(
+                            "%sDefensively initializing text=\"\" on malformed "
+                            "content_block_start event (text was None)",
+                            getattr(agent, "log_prefix", ""),
+                        )
+                        last_block.text = ""
+                    elif block_type == "thinking" and getattr(last_block, "thinking", None) is None:
+                        logger.debug(
+                            "%sDefensively initializing thinking=\"\" on malformed "
+                            "content_block_start event (thinking was None)",
+                            getattr(agent, "log_prefix", ""),
+                        )
+                        last_block.thinking = ""
+
+            # Access event_type from the already computed value
+            # event_type = getattr(event, "type", None)  # Already computed above
+
+            if event_type == "content_block_start":
+                block = getattr(event, "content_block", None) or (event.get("content_block") if isinstance(event, dict) else None)
+                if block and (getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)) == "tool_use":
+                    has_tool_use = True
+                    tool_name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else None)
+                    if tool_name:
+                        _fire_first_delta()
+                        agent._fire_tool_gen_started(tool_name)
+
+            elif event_type == "content_block_delta":
+                delta = getattr(event, "delta", None) or (event.get("delta") if isinstance(event, dict) else None)
+                if delta:
+                    delta_type = getattr(delta, "type", None) or (delta.get("type") if isinstance(delta, dict) else None)
+                    if delta_type == "text_delta":
+                        text = getattr(delta, "text", "") or (delta.get("text", "") if isinstance(delta, dict) else "")
+                        if text and not has_tool_use:
+                            _fire_first_delta()
+                            agent._fire_stream_delta(text)
+                            deltas_were_sent["yes"] = True
+                    elif delta_type == "thinking_delta":
+                        thinking_text = getattr(delta, "thinking", "") or (delta.get("thinking", "") if isinstance(delta, dict) else "")
+                        if thinking_text:
+                            _fire_first_delta()
+                            agent._fire_reasoning_delta(thinking_text)
+
+        # Return the accumulated message for downstream processing.
+        # If interrupted, current_snapshot may be incomplete; outer loop
+        # raises InterruptedError anyway so this return is discarded.
+        if agent._interrupt_requested:
+            return None
+        return current_snapshot
 
     def _call():
         import httpx as _httpx

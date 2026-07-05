@@ -59,6 +59,35 @@ def _good_stream_cm():
     return cm
 
 
+def _good_create_stream():
+    """Iterator that yields minimal events for messages.create(stream=True)."""
+    class _GoodStream:
+        response = None
+
+        def __iter__(self):
+            yield {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-opus-4-7",
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            }
+            yield {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 5},
+            }
+            yield {"type": "message_stop"}
+
+    return _GoodStream()
+
+
 def _failing_stream_cm():
     """Context manager whose __enter__ raises ConnectError immediately."""
     cm = MagicMock()
@@ -66,6 +95,18 @@ def _failing_stream_cm():
         side_effect=httpx.ConnectError("connection reset by peer")
     )
     return cm
+
+
+def _failing_create_stream():
+    """Iterator that raises ConnectError on first iteration."""
+    class _FailingStream:
+        response = None
+
+        def __iter__(self):
+            raise httpx.ConnectError("connection reset by peer")
+            yield  # make this a generator
+
+    return _FailingStream()
 
 
 # ---------------------------------------------------------------------------
@@ -85,13 +126,13 @@ class TestAnthropicStreamPoolCleanup:
 
         attempt_count = [0]
 
-        def _stream_side_effect(*args, **kwargs):
+        def _create_side_effect(*args, **kwargs):
             attempt_count[0] += 1
             if attempt_count[0] == 1:
-                return _failing_stream_cm()
-            return _good_stream_cm()
+                return _failing_create_stream()
+            return _good_create_stream()
 
-        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        agent._anthropic_client.messages.create.side_effect = _create_side_effect
 
         with patch.object(agent, "_rebuild_anthropic_client") as mock_rebuild:
             with patch.object(
@@ -114,27 +155,24 @@ class TestAnthropicStreamPoolCleanup:
         unblock = threading.Event()
         attempt_count = [0]
 
-        def _stream_side_effect(*args, **kwargs):
+        def _create_side_effect(*args, **kwargs):
             attempt_count[0] += 1
             if attempt_count[0] == 1:
                 # First attempt: stream that yields nothing (triggers stale detector),
                 # then raises ConnectError once _anthropic_client.close() unblocks it.
-                cm = MagicMock()
-                stream = MagicMock()
+                class _BlockingStream:
+                    response = None
 
-                def _blocking_gen():
-                    unblock.wait(timeout=5.0)
-                    raise httpx.ConnectError("connection dropped after close()")
-                    yield  # make this a generator so next() triggers the wait
+                    def __iter__(self):
+                        unblock.wait(timeout=5.0)
+                        raise httpx.ConnectError("connection dropped after close()")
+                        yield  # make this a generator
 
-                stream.__iter__ = MagicMock(return_value=_blocking_gen())
-                cm.__enter__ = MagicMock(return_value=stream)
-                cm.__exit__ = MagicMock(return_value=False)
-                return cm
+                return _BlockingStream()
             # Second attempt: succeed
-            return _good_stream_cm()
+            return _good_create_stream()
 
-        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        agent._anthropic_client.messages.create.side_effect = _create_side_effect
         # close() on the mock Anthropic client unblocks the inner thread.
         agent._anthropic_client.close.side_effect = unblock.set
 
