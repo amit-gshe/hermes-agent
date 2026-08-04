@@ -2699,6 +2699,7 @@ def list_authenticated_providers(
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
+                    _ep_api_mode = str(ep_cfg.get("api_mode") or "").strip().lower() or None
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
@@ -2880,6 +2881,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
+                    "api_mode": api_mode,
                     "models": [],
                     "has_explicit_models": False,
                     "discover_models": discover,
@@ -3014,6 +3016,7 @@ def list_authenticated_providers(
                 try:
                     from hermes_cli.models import fetch_api_models
 
+                    _grp_api_mode = grp.get("api_mode") or None
                     live_models = fetch_api_models(
                         api_key,
                         api_url,

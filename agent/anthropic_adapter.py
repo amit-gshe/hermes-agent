@@ -504,30 +504,28 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
-    """Return True for any Kimi / Moonshot Anthropic-Messages-speaking endpoint.
+    """Return True for Kimi / Moonshot official Anthropic-Messages-speaking endpoints.
 
-    Broader than ``_is_kimi_coding_endpoint`` — matches:
+    Matches:
 
-    - Kimi's official ``/coding`` URL (legacy check, preserved)
+    - Kimi's official ``/coding`` URL (requires claude-code UA)
     - Any ``api.kimi.com`` / ``moonshot.ai`` / ``moonshot.cn`` host
-    - Custom or proxied endpoints whose *model* name is in the Kimi / Moonshot
-      family (``kimi-*``, ``moonshot-*``, ``k1.*``, ``k2.*``, …).  Users with
-      ``api_mode: anthropic_messages`` on a private gateway fronting Kimi
-      fall into this branch — the upstream still enforces Kimi's thinking
-      semantics (reasoning_content required on every replayed tool-call
-      message) regardless of the gateway's hostname.
 
     Used to decide whether to drop Anthropic's ``thinking`` kwarg and to
     preserve unsigned reasoning_content-derived thinking blocks on replay.
     See hermes-agent#13848, #17057.
+
+    Note: Model-name-based detection was removed because it caused false
+    positives for custom gateways using model names that happen to match
+    Kimi family prefixes (e.g., ``kimi-k2.6`` on a non-Kimi backend).
+    Custom gateways should NOT be treated as Kimi endpoints unless they
+    use Kimi's official domain. See hermes-agent issue discussion for context.
     """
     if _is_kimi_coding_endpoint(base_url):
         return True
     for _domain in ("api.kimi.com", "moonshot.ai", "moonshot.cn"):
         if base_url_host_matches(base_url or "", _domain):
             return True
-    if _model_name_is_kimi_family(model):
-        return True
     return False
 
 
@@ -3172,6 +3170,141 @@ def create_anthropic_message(
                 exc,
             )
 
+    if prefer_stream:
+        # Use custom streaming logic with defensive event preprocessing
+        # to handle malformed message_start events from third-party gateways.
+        try:
+            return _stream_anthropic_message_with_fix(messages_api, api_kwargs, log_prefix)
+        except Exception as exc:
+            if _is_stream_unavailable_error(exc):
+                # Provider explicitly doesn't support streaming; fall back
+                pass
+            else:
+                raise
+
+    # Fallback to non-streaming create() (for providers that don't support streaming)
     create_kwargs = dict(api_kwargs)
     create_kwargs.pop("stream", None)
     return messages_api.create(**create_kwargs)
+
+
+def _stream_anthropic_message_with_fix(
+    messages_api: Any,
+    api_kwargs: dict,
+    log_prefix: str,
+) -> Any:
+    """Stream an Anthropic message with defensive content field fixing.
+
+    Some Anthropic-compatible gateways (claude-code-hub) return malformed
+    ``message_start`` events where ``message.content`` is ``None``. The SDK's
+    ``accumulate_event`` creates a ``ParsedMessage`` with ``content=None``,
+    which triggers ``AttributeError`` on subsequent ``content_block_start``
+    events when it tries to ``.append()`` to ``None``.
+
+    We fix this by checking after ``message_start`` and defensively
+    initializing ``content`` to an empty list if it is ``None``. This
+    preserves streaming behavior and avoids fallback to non-streaming.
+
+    Returns the final accumulated ``ParsedMessage`` (compatible with ``Message``).
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError("anthropic SDK not available")
+
+    # Import SDK internals for custom event accumulation
+    try:
+        from anthropic.lib.streaming._messages import accumulate_event
+        from anthropic._types import NOT_GIVEN
+    except ImportError as e:
+        logger.debug(
+            "%sFailed to import accumulate_event from anthropic SDK; "
+            "falling back to messages.stream(): %s",
+            log_prefix,
+            e,
+        )
+        # Fallback to SDK's stream() method if internals are not available
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        with messages_api.stream(**stream_kwargs) as stream:
+            return stream.get_final_message()
+
+    stream_kwargs = dict(api_kwargs)
+    stream_kwargs.pop("stream", None)
+    stream_kwargs["stream"] = True
+
+    # Use messages.create(stream=True) to get raw SSE stream
+    raw_stream = messages_api.create(**stream_kwargs)
+
+    current_snapshot = None
+
+    for event in raw_stream:
+        # Defensive preprocessing BEFORE accumulate_event:
+        # Some gateways return malformed content_block_start events with
+        # text=None or thinking=None, which causes TypeError in accumulate_event
+        # when it tries to do content.text += delta.text later.
+        event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+        if event_type == "content_block_start":
+            content_block = getattr(event, "content_block", None) or (event.get("content_block") if isinstance(event, dict) else None)
+            if content_block:
+                block_type = getattr(content_block, "type", None) or (content_block.get("type") if isinstance(content_block, dict) else None)
+                if block_type == "text":
+                    text_val = getattr(content_block, "text", None) or (content_block.get("text") if isinstance(content_block, dict) else None)
+                    if text_val is None:
+                        logger.debug("%sDefensively setting text=\"\" on malformed content_block_start event", log_prefix)
+                        if hasattr(content_block, "text"):
+                            content_block.text = ""
+                        elif isinstance(content_block, dict):
+                            content_block["text"] = ""
+                elif block_type == "thinking":
+                    thinking_val = getattr(content_block, "thinking", None) or (content_block.get("thinking") if isinstance(content_block, dict) else None)
+                    if thinking_val is None:
+                        logger.debug("%sDefensively setting thinking=\"\" on malformed content_block_start event", log_prefix)
+                        if hasattr(content_block, "thinking"):
+                            content_block.thinking = ""
+                        elif isinstance(content_block, dict):
+                            content_block["thinking"] = ""
+
+        # Process event through SDK's accumulator
+        current_snapshot = accumulate_event(
+            event=event,
+            current_snapshot=current_snapshot,
+            output_format=NOT_GIVEN,
+        )
+
+        # Defensive fix: ensure content is a list after message_start
+        # (some gateways return message_start with content=None)
+        # Use getattr to handle both dict and object event types
+        event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+        if event_type == "message_start" and current_snapshot is not None:
+            if getattr(current_snapshot, "content", None) is None:
+                logger.debug(
+                    "%sDefensively initializing content=[] on malformed "
+                    "message_start event (content was None)",
+                    log_prefix,
+                )
+                current_snapshot.content = []
+
+        # Defensive fix: ensure text/thinking fields are not None after content_block_start
+        # (some gateways return content_block_start with text=None or thinking=None)
+        if event_type == "content_block_start" and current_snapshot is not None:
+            content_list = getattr(current_snapshot, "content", None)
+            if content_list and len(content_list) > 0:
+                # Get the last content block (the one just added by accumulate_event)
+                last_block = content_list[-1]
+                block_type = getattr(last_block, "type", None)
+                if block_type == "text" and getattr(last_block, "text", None) is None:
+                    logger.debug(
+                        "%sDefensively initializing text="" on malformed "
+                        "content_block_start event (text was None)",
+                        log_prefix,
+                    )
+                    last_block.text = ""
+                elif block_type == "thinking" and getattr(last_block, "thinking", None) is None:
+                    logger.debug(
+                        "%sDefensively initializing thinking="" on malformed "
+                        "content_block_start event (thinking was None)",
+                        log_prefix,
+                    )
+                    last_block.thinking = ""
+
+    return current_snapshot

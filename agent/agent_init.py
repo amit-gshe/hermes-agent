@@ -612,9 +612,59 @@ def init_agent(
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
-    agent.base_url = base_url or ""
+
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+
+    # Resolve base_url, api_key, and api_mode from custom_providers config when
+    # provider is 'custom:<name>' and these were not explicitly passed. This ensures
+    # AIAgent() constructed directly (not via oneshot.py or resolve_runtime_provider)
+    # also gets the correct configuration.
+    _resolved_base_url = base_url
+    _resolved_api_key = api_key
+    _resolved_api_mode = api_mode
+    if provider_name and provider_name.startswith("custom:"):
+        _cp_name = provider_name.split(":", 1)[1].strip().lower() if ":" in provider_name else ""
+        if _cp_name and (_resolved_base_url is None or _resolved_api_key is None or _resolved_api_mode not in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}):
+            try:
+                from hermes_cli.config import load_config, get_compatible_custom_providers
+                _cfg = load_config()
+                _cp_entries = get_compatible_custom_providers(_cfg)
+                for _cp_entry in _cp_entries or []:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _entry_name = str(_cp_entry.get("name", "") or "").strip().lower()
+                    _entry_key = str(_cp_entry.get("provider_key", "") or "").strip().lower()
+                    if _cp_name not in {_entry_name, _entry_key}:
+                        continue
+                    # Resolve base_url if not provided
+                    if _resolved_base_url is None:
+                        _cp_base_url = str(_cp_entry.get("base_url", "") or "").strip()
+                        if _cp_base_url:
+                            _resolved_base_url = _cp_base_url.rstrip("/")
+                    # Resolve api_key if not provided
+                    if _resolved_api_key is None:
+                        _cp_api_key = str(_cp_entry.get("api_key", "") or "").strip()
+                        if _cp_api_key:
+                            _resolved_api_key = _cp_api_key
+                        # Also check key_env
+                        _key_env = str(_cp_entry.get("key_env", "") or "").strip()
+                        if _key_env:
+                            import os as _os
+                            _env_key = _os.getenv(_key_env, "").strip()
+                            if _env_key:
+                                _resolved_api_key = _env_key
+                    # Resolve api_mode if not provided
+                    if _resolved_api_mode not in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+                        _cp_api_mode = str(_cp_entry.get("api_mode", "") or "").strip()
+                        if _cp_api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+                            _resolved_api_mode = _cp_api_mode
+                    break
+            except Exception:
+                pass  # Non-fatal — fall back to defaults
+
+    # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
+    # Use resolved values from custom_providers config when available
+    agent.base_url = _resolved_base_url or ""
     agent.provider = provider_name or ""
     agent.requested_provider = (
         requested_provider.strip().lower()
@@ -624,8 +674,13 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
-        agent.api_mode = api_mode
+
+    # Update parameter references so subsequent code uses resolved values
+    base_url = _resolved_base_url
+    api_key = _resolved_api_key
+
+    if _resolved_api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+        agent.api_mode = _resolved_api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:

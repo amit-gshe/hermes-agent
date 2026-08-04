@@ -696,30 +696,97 @@ class TestAnthropicStreamCallbacks:
         touch_calls = []
         agent._touch_activity = lambda desc: touch_calls.append(desc)
 
-        events = [
-            SimpleNamespace(
-                type="content_block_delta",
-                delta=SimpleNamespace(type="text_delta", text="Hello"),
-            ),
-            SimpleNamespace(
-                type="content_block_delta",
-                delta=SimpleNamespace(type="thinking_delta", thinking="thinking"),
-            ),
-            SimpleNamespace(
-                type="content_block_start",
-                content_block=SimpleNamespace(type="tool_use", name="terminal"),
-            ),
+        # Create RawMessageStreamEvent format events for messages.create(stream=True)
+        # This is the format that accumulate_event expects.
+        raw_events = [
+            # message_start
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "test-model",
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            },
+            # content_block_start (text)
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            # content_block_delta (text)
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Hello"},
+            },
+            # content_block_stop
+            {
+                "type": "content_block_stop",
+                "index": 0,
+            },
+            # content_block_start (thinking)
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+            # content_block_delta (thinking)
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "thinking_delta", "thinking": "thinking"},
+            },
+            # content_block_stop
+            {
+                "type": "content_block_stop",
+                "index": 1,
+            },
+            # content_block_start (tool_use)
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {"type": "tool_use", "name": "terminal", "id": "tool_0", "input": {}},
+            },
+            # message_delta
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 5},
+            },
+            # message_stop
+            {
+                "type": "message_stop",
+            },
         ]
 
+        # Expected number of events that trigger _touch_activity
+        expected_touch_count = len(raw_events)
+
+        # Mock for messages.create(stream=True)
+        mock_raw_stream = MagicMock()
+        mock_raw_stream.__iter__ = MagicMock(return_value=iter(raw_events))
+        mock_raw_stream.response = None
+
         final_message = SimpleNamespace(
-            content=[],
+            content=[
+                SimpleNamespace(type="text", text="Hello"),
+                SimpleNamespace(type="thinking", thinking="thinking"),
+                SimpleNamespace(type="tool_use", name="terminal", id="tool_0", input={}),
+            ],
             stop_reason="end_turn",
         )
 
+        # Mock for messages.stream() (legacy path, not used by new code)
         mock_stream = MagicMock()
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.__iter__ = MagicMock(return_value=iter([]))
         mock_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
@@ -759,29 +826,47 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
-        class _BadStream:
+        # Bad stream that raises ValueError on iteration (for messages.create)
+        class _BadCreateStream:
             response = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
 
             def __iter__(self):
                 raise ValueError("expected ident at line 1 column 149")
 
         final_message = SimpleNamespace(content=[], stop_reason="end_turn")
-        good_stream = MagicMock()
-        good_stream.__enter__ = MagicMock(return_value=good_stream)
-        good_stream.__exit__ = MagicMock(return_value=False)
-        good_stream.__iter__ = MagicMock(return_value=iter([]))
-        good_stream.get_final_message.return_value = final_message
+
+        # Good stream that returns valid events (for messages.create)
+        class _GoodCreateStream:
+            response = None
+
+            def __iter__(self):
+                # Yield minimal events that accumulate to final_message
+                yield {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": "MiniMax-M2.7",
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 10, "output_tokens": 0},
+                    },
+                }
+                yield {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 5},
+                }
+                yield {
+                    "type": "message_stop",
+                }
 
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.side_effect = [
-            _BadStream(),
-            good_stream,
+        agent._anthropic_client.messages.create.side_effect = [
+            _BadCreateStream(),
+            _GoodCreateStream(),
         ]
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
@@ -816,6 +901,13 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
+        # Bad stream that raises generic ValueError on iteration (for messages.create)
+        class _BadCreateStream:
+            response = None
+
+            def __iter__(self):
+                raise ValueError("invalid local request shape")
+
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = ValueError(
             "invalid local request shape"
@@ -825,7 +917,6 @@ class TestAnthropicStreamCallbacks:
         with pytest.raises(ValueError, match="invalid local request shape"):
             agent._interruptible_streaming_api_call({})
 
-        assert agent._anthropic_client.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
 
 

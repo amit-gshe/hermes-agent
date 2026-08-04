@@ -59,6 +59,89 @@ class _FakeAnthropicStream:
     def get_final_message(self):
         return self._final_message
 
+    def __iter__(self):
+        # Yield ParsedMessageStreamEvent-like objects for the stream iterator.
+        # This allows the new create(stream=True) path to work.
+        return iter([])
+
+
+class _FakeAnthropicRawStream:
+    """Mock for anthropic.Stream[RawMessageStreamEvent] returned by create(stream=True)."""
+
+    def __init__(self, final_message):
+        self._final_message = final_message
+        self.response = None  # httpx response mock
+
+    def __iter__(self):
+        # Yield dictionaries that can be converted to RawMessageStreamEvent by SDK.
+        # The SDK's accumulate_event uses construct_type_unchecked to convert
+        # dict-like objects to RawMessageStreamEvent.
+        text_content = self._final_message.content[0].text if self._final_message.content else ""
+
+        # message_start event - use dict format for SDK conversion
+        yield {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-sonnet-4-20250514",
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": self._final_message.usage.input_tokens,
+                    "output_tokens": 0,
+                },
+            },
+        }
+
+        # content_block_start event for text
+        yield {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "text",
+                "text": "",
+            },
+        }
+
+        # content_block_delta event
+        yield {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "text_delta",
+                "text": text_content,
+            },
+        }
+
+        # content_block_stop event
+        yield {
+            "type": "content_block_stop",
+            "index": 0,
+        }
+
+        # message_delta event
+        yield {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": self._final_message.stop_reason,
+                "stop_sequence": None,
+            },
+            "usage": {
+                "input_tokens": None,
+                "output_tokens": self._final_message.usage.output_tokens,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+            },
+        }
+
+        # message_stop event
+        yield {
+            "type": "message_stop",
+        }
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
@@ -1160,7 +1243,7 @@ class TestVisionClientFallback:
         )
         messages_api = SimpleNamespace(
             stream=MagicMock(return_value=_FakeAnthropicStream(final_message)),
-            create=MagicMock(return_value="raw event-stream text"),
+            create=MagicMock(return_value=_FakeAnthropicRawStream(final_message)),
         )
         real_client = SimpleNamespace(messages=messages_api)
         client = AnthropicAuxiliaryClient(
@@ -1175,8 +1258,9 @@ class TestVisionClientFallback:
             max_tokens=16,
         )
 
-        messages_api.stream.assert_called_once()
-        messages_api.create.assert_not_called()
+        # The new implementation uses create(stream=True) instead of stream()
+        # to have more control over event processing for defensive fixes.
+        messages_api.create.assert_called_once()
         assert response.choices[0].message.content == "streamed aux response"
         assert response.usage.prompt_tokens == 3
         assert response.usage.completion_tokens == 4

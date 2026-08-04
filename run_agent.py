@@ -1249,9 +1249,35 @@ class AIAgent:
         ``ValueError`` such as ``expected ident at line 1 column 149``.  That
         is provider wire-format trouble, not local request validation, so it
         should follow the same retry path as a truncated JSON body.
+
+        Additionally, some Anthropic-compatible gateways (e.g. claude-code-hub)
+        return SSE events that the SDK's streaming accumulator cannot parse,
+        raising ``AttributeError: 'NoneType' object has no attribute 'append'``
+        or ``TypeError`` in accumulate_event. These are also provider-side
+        issues that should trigger retry / fallback behavior.
         """
         if getattr(self, "api_mode", None) != "anthropic_messages":
             return False
+        # AttributeError/TypeError from SDK streaming accumulator (e.g.
+        # claude-code-hub malformed SSE events).
+        if isinstance(error, (AttributeError, TypeError)):
+            # Exclude TypeError from kwarg validation (SDK raises these on
+            # invalid arguments, which are client errors, not stream parse).
+            err_str = str(error).lower()
+            if isinstance(error, TypeError):
+                # SDK TypeError with "unexpected keyword argument" is local
+                # validation, not a stream parse error.
+                if "unexpected keyword" in err_str:
+                    return False
+                if "got an unexpected keyword" in err_str:
+                    return False
+            # AttributeError with 'NoneType' and 'append' is the classic
+            # streaming accumulator bug from malformed SSE.
+            if isinstance(error, AttributeError) and "nonetype" in err_str and "append" in err_str:
+                return True
+            # Other AttributeError/TypeError in the streaming context are
+            # likely SDK parse issues; classify as stream parse errors.
+            return True
         if not isinstance(error, ValueError):
             return False
         if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
@@ -7480,6 +7506,7 @@ class AIAgent:
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
+            model=function_args.get("model"),
             background=(not _is_subagent),
             parent_agent=self,
         )

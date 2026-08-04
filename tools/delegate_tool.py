@@ -2782,6 +2782,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2796,6 +2797,9 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'model' parameter specifies which model the subagent should use.
+    Priority: per-task model > top-level model > delegation.model config > parent.
 
     Returns JSON with results array, one entry per task.
     """
@@ -3819,6 +3823,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. When set, this task's "
+                                "subagent uses the specified model, overriding both "
+                                "top-level 'model' and delegation.model from config. "
+                                "Example: 'gpt-4o-mini' for cheap tasks, 'claude-3-5-sonnet' for heavy reasoning."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3831,6 +3844,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model for the subagent. When set, overrides delegation.model "
+                    "from config. If not set, subagent inherits from config or parent. "
+                    "Per-task model (in tasks array) takes precedence over this. "
+                    "Example: 'gpt-4o-mini', 'claude-3-5-sonnet'."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3903,6 +3925,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        model=args.get("model"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

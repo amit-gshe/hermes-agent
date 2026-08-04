@@ -113,8 +113,8 @@ class TestKimiFamilyGetsAdaptiveThinking:
 
 
 
-    def test_kimi_family_replay_preserves_unsigned_thinking(self) -> None:
-        """On a custom Kimi endpoint, unsigned reasoning_content thinking
+    def test_official_kimi_replay_preserves_unsigned_thinking(self) -> None:
+        """On an official Kimi endpoint, unsigned reasoning_content thinking
         blocks must survive the third-party signature-stripping pass so
         the upstream's message-history validation passes.
         """
@@ -137,7 +137,7 @@ class TestKimiFamilyGetsAdaptiveThinking:
         ]
         _, converted = convert_messages_to_anthropic(
             messages,
-            base_url="http://my-kimi-proxy.internal",
+            base_url="https://api.kimi.com/v1",
             model="kimi-2.6",
         )
         # The assistant message still carries the unsigned thinking block
@@ -151,3 +151,41 @@ class TestKimiFamilyGetsAdaptiveThinking:
         ]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "planning the tool call"
+
+    def test_custom_endpoint_replay_strips_unsigned_thinking(self) -> None:
+        """On a custom endpoint (not official Kimi), unsigned reasoning_content
+        thinking blocks should be stripped because the endpoint is not
+        identified as Kimi-based solely on model name.
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "planning the tool call",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "skill_view", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        _, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="http://my-custom-proxy.internal",
+            model="kimi-2.6",
+        )
+        # Custom endpoint is NOT treated as Kimi, so unsigned thinking blocks
+        # from reasoning_content should be stripped (converted to text or removed).
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        assistant_blocks = assistant_msg["content"]
+        thinking_blocks = [
+            b for b in assistant_blocks
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        # Unsigned thinking blocks should not survive on non-Kimi endpoints
+        assert len(thinking_blocks) == 0
