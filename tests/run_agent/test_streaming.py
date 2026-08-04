@@ -782,11 +782,11 @@ class TestAnthropicStreamCallbacks:
             stop_reason="end_turn",
         )
 
-        # Mock for messages.stream() (legacy path, not used by new code)
+        # Mock for messages.stream() (relay path exercised by current code)
         mock_stream = MagicMock()
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
         mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(return_value=iter([]))
+        mock_stream.__iter__ = MagicMock(return_value=iter(raw_events))
         mock_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
@@ -797,8 +797,92 @@ class TestAnthropicStreamCallbacks:
 
         agent._interruptible_streaming_api_call({})
 
-        assert touch_calls.count("receiving stream response") == len(events)
+        assert touch_calls.count("receiving stream response") == len(raw_events)
         mock_stream.close.assert_called_once()
+
+    def test_anthropic_stream_managed_llm_stream_never_calls_get_final_message(self):
+        """The relay-wrapped stream is a ManagedLlmStream, NOT the native
+        Anthropic SDK stream.
+
+        Regression for the merge (e80c369ec) that moved
+        ``return stream.get_final_message()`` inside the event loop: there
+        ``stream`` is Hermes's relay wrapper, which has no
+        ``get_final_message`` attribute, so the very first event crashed with
+        AttributeError before any delta reached the UI. This is the
+        claude-code-hub / anthropic_messages path.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        deltas = []
+        agent._fire_stream_delta = lambda text: deltas.append(text)
+
+        # Object-shaped RawMessageStreamEvents as the real SDK yields them.
+        events = [
+            SimpleNamespace(
+                type="message_start",
+                message=SimpleNamespace(
+                    id="msg_test",
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="claude-test",
+                    stop_reason=None,
+                    stop_sequence=None,
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=0),
+                ),
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                index=0,
+                content_block=SimpleNamespace(type="text", text=""),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                index=0,
+                delta=SimpleNamespace(type="text_delta", text="Hello"),
+            ),
+            SimpleNamespace(
+                type="message_delta",
+                delta=SimpleNamespace(stop_reason="end_turn", stop_sequence=None),
+                usage=SimpleNamespace(output_tokens=5),
+            ),
+            SimpleNamespace(type="message_stop"),
+        ]
+
+        final_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Hello")],
+            stop_reason="end_turn",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+
+        response = agent._interruptible_streaming_api_call({})
+
+        # First event must NOT short-circuit on a ManagedLlmStream
+        # get_final_message(); every delta must be processed and the final
+        # native message must come back from the raw stream.
+        assert response is final_message
+        assert deltas == ["Hello"]
 
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
@@ -826,47 +910,32 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
-        # Bad stream that raises ValueError on iteration (for messages.create)
-        class _BadCreateStream:
+        # Bad stream that raises ValueError on iteration (for messages.stream)
+        class _BadStream:
             response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
 
             def __iter__(self):
                 raise ValueError("expected ident at line 1 column 149")
 
         final_message = SimpleNamespace(content=[], stop_reason="end_turn")
 
-        # Good stream that returns valid events (for messages.create)
-        class _GoodCreateStream:
-            response = None
-
-            def __iter__(self):
-                # Yield minimal events that accumulate to final_message
-                yield {
-                    "type": "message_start",
-                    "message": {
-                        "id": "msg_test",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [],
-                        "model": "MiniMax-M2.7",
-                        "stop_reason": None,
-                        "stop_sequence": None,
-                        "usage": {"input_tokens": 10, "output_tokens": 0},
-                    },
-                }
-                yield {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn"},
-                    "usage": {"output_tokens": 5},
-                }
-                yield {
-                    "type": "message_stop",
-                }
+        # Good stream that returns valid events (for messages.stream)
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create.side_effect = [
-            _BadCreateStream(),
-            _GoodCreateStream(),
+        agent._anthropic_client.messages.stream.side_effect = [
+            _BadStream(),
+            good_stream,
         ]
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 

@@ -5300,13 +5300,22 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client.messages.stream.side_effect = RuntimeError(
             "stream is not supported by this provider"
         )
-        agent._anthropic_client.messages.create.return_value = response
+        # create() is attempted twice: first with stream=True inside
+        # _stream_anthropic_message_with_fix, then without streaming once
+        # the provider confirms streaming is unavailable.
+        agent._anthropic_client.messages.create.side_effect = [
+            RuntimeError("stream is not supported by this provider"),
+            response,
+        ]
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
         agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.create.assert_any_call(
+            stream=True, model="claude-sonnet-4-20250514"
+        )
+        agent._anthropic_client.messages.create.assert_called_with(model="claude-sonnet-4-20250514")
         assert result is response
 
 

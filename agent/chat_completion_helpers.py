@@ -3618,8 +3618,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 except Exception:
                     pass
                 if agent._interrupt_requested:
-                    return None
-                return stream.get_final_message()
+                    break
 
                 event_type = getattr(event, "type", None)
                 if event_type == "content_block_start":
