@@ -618,7 +618,11 @@ class TestSubagentCostRollup(unittest.TestCase):
             ]
             result = json.loads(
                 delegate_task(
-                    tasks=[{"goal": "A"}, {"goal": "B"}, {"goal": "C"}],
+                    tasks=[
+                        {"goal": "Investigate module A"},
+                        {"goal": "Investigate module B"},
+                        {"goal": "Investigate module C"},
+                    ],
                     parent_agent=parent,
                 )
             )
@@ -1112,6 +1116,69 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"got {len(touch_calls)} touches",
         )
 
+    def test_heartbeat_does_not_trip_idle_stale_while_waiting_on_model(self):
+        """A slow in-flight model wait (api_call_count frozen, no tool) must
+        stay alive when last_activity_ts keeps advancing.
+
+        Top-level delegate_task runs in the background; the async stall
+        monitor already treats ticking last_activity_ts as progress. The sync
+        heartbeat path must use the same signal so slow local / long-prefill
+        completions are not mistaken for a wedged idle child.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        kept_going = threading.Event()
+
+        def record(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) > 2:
+                kept_going.set()
+
+        parent._touch_activity = record
+
+        child = MagicMock()
+        activity = {"ts": 1000.0}
+
+        def _summary():
+            # Frozen iteration / no tool — only the activity clock moves,
+            # matching direct_api_call's mid-wait heartbeats.
+            activity["ts"] += 1.0
+            return {
+                "current_tool": None,
+                "api_call_count": 1,
+                "max_iterations": 50,
+                "last_activity_desc": "waiting for non-streaming API response",
+                "last_activity_ts": activity["ts"],
+            }
+
+        child.get_activity_summary.side_effect = _summary
+
+        def slow_run(**kwargs):
+            kept_going.wait(5)
+            return {"final_response": "done", "completed": True, "api_calls": 1}
+
+        child.run_conversation.side_effect = slow_run
+
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.01),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40),
+        ):
+            _run_single_child(
+                task_index=0,
+                goal="Test slow model wait",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertGreater(
+            len(touch_calls), 2,
+            f"Heartbeat stopped too early while child was waiting on the model; "
+            f"got {len(touch_calls)} touches",
+        )
+
 
 class TestDelegationReasoningEffort(unittest.TestCase):
     """Tests for delegation.reasoning_effort config override."""
@@ -1262,7 +1329,10 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
         Note: 'toolsets' is intentionally NOT forwarded (removed in #56386).
         Subagents always inherit the parent's toolsets; the model cannot
-        choose or narrow them.
+        choose or narrow them. Likewise 'acp_command'/'acp_args' are NOT
+        forwarded (#52346): ACP subprocess transport is operator-controlled,
+        a model tool call must not choose the command that reaches child
+        construction.
         """
         inputs = {
             "goal": "g",
@@ -1270,8 +1340,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
             # 'toolsets' removed — subagents inherit parent's toolsets (#56386)
             "tasks": None,
             "max_iterations": 7,
-            "acp_command": "claude",
-            "acp_args": ["--stdio"],
+            # 'acp_command'/'acp_args' NOT forwarded (#52346) — see below
             "role": "orchestrator",
             "model": "glm-5",
             # 'background' intentionally ignored — computed from _is_subagent
@@ -1285,6 +1354,10 @@ class TestDispatchDelegateTask(unittest.TestCase):
                 f"_dispatch_delegate_task dropped {key!r}: "
                 f"got {captured.get(key)!r}, expected {expected!r}",
             )
+        # ACP transport must never reach child construction from a model tool
+        # call — forwarding these would regress the #52346 security fix.
+        self.assertIsNone(captured.get("acp_command"))
+        self.assertIsNone(captured.get("acp_args"))
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -1627,7 +1700,10 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
-                        tasks=[{"goal": "leaf-A"}, {"goal": "leaf-B"}],
+                        tasks=[
+                            {"goal": "Do leaf work stream A"},
+                            {"goal": "Do leaf work stream B"},
+                        ],
                         parent_agent=m,
                     )
                     return {
