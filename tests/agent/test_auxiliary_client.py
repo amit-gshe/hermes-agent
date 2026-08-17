@@ -2342,6 +2342,46 @@ class TestKimiTemperatureOmitted:
         assert kwargs["temperature"] == 0.3
 
 
+class TestAutoResolvedApiModeInheritance:
+    """Auto-resolved auxiliary tasks inherit api_mode from main_runtime.
+
+    ``_resolve_task_provider_model`` returns ``api_mode=None`` on the auto path
+    (no ``auxiliary.<task>`` config block). Without inheriting from main_runtime,
+    a custom ``anthropic_messages`` endpoint dropped the caller's max_tokens and
+    fell back to the 128000 default, exceeding the provider's output ceiling
+    (#34845 aftermath).
+    """
+
+    @pytest.mark.asyncio
+    async def test_async_auto_resolved_task_inherits_api_mode_from_main_runtime(self):
+        client = MagicMock()
+        client.base_url = "https://hub.test.utown.io"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "deepseek-v4-flash"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "deepseek-v4-flash", None, None, None),
+        ):
+            result = await async_call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+                max_tokens=64,
+                main_runtime={
+                    "provider": "custom",
+                    "model": "deepseek-v4-flash",
+                    "base_url": "https://hub.test.utown.io",
+                    "api_mode": "anthropic_messages",
+                },
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs.get("max_tokens") == 64
+
 
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)

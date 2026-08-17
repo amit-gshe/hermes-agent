@@ -9239,6 +9239,18 @@ def _call_llm_impl(
         task, provider, model, base_url, api_key)
     if api_mode:
         resolved_api_mode = api_mode
+    if not resolved_api_mode:
+        # Auto-resolved auxiliary tasks (no auxiliary.<task> config block)
+        # inherit api_mode from the main runtime so wire-format-specific
+        # request shaping still applies — e.g. anthropic_messages endpoints
+        # require max_tokens as a mandatory field, and _build_call_kwargs
+        # only forwards it when api_mode is known. Without this, a custom
+        # anthropic_messages provider resolved via the auto chain dropped
+        # the caller's max_tokens and fell back to the 128000 default,
+        # exceeding the provider's output ceiling (#34845 regression).
+        _rt = _normalize_main_runtime(main_runtime)
+        if _rt.get("api_mode"):
+            resolved_api_mode = _rt["api_mode"]
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
@@ -10030,6 +10042,13 @@ async def _async_call_llm_impl(
     main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if not resolved_api_mode:
+        # Auto-resolved auxiliary tasks inherit api_mode from the main
+        # runtime — see the sync _call_llm_impl for the full rationale
+        # (anthropic_messages endpoints require max_tokens; without this
+        # the auto chain dropped it and fell back to the 128000 default).
+        if main_runtime.get("api_mode"):
+            resolved_api_mode = main_runtime["api_mode"]
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
