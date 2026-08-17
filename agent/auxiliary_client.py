@@ -4656,6 +4656,7 @@ def _retry_same_provider_sync(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers (e.g. Copilot's
     # ``x-initiator: user``) across the rebuilt-client retry — dropping them
@@ -4731,6 +4732,7 @@ async def _retry_same_provider_async(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers across the rebuilt-client
     # retry — see the sync variant above (#60293).
@@ -5069,7 +5071,8 @@ def _call_fallback_candidate_sync(
         temperature=temperature, max_tokens=max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=destination.base_url, task=task)
+        base_url=destination.base_url, task=task,
+        api_mode=destination.api_mode)
     try:
         return _validate_llm_response(
             _relay_sync_completion(
@@ -5114,7 +5117,8 @@ def _call_fallback_candidate_sync(
                     tools=retry_tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
+                    base_url=retry_destination.base_url, task=task,
+                    api_mode=retry_destination.api_mode)
                 try:
                     return _validate_llm_response(
                         _relay_sync_completion(
@@ -5175,7 +5179,8 @@ async def _call_fallback_candidate_async(
         temperature=temperature, max_tokens=max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=destination.base_url, task=task)
+        base_url=destination.base_url, task=task,
+        api_mode=destination.api_mode)
     try:
         return _validate_llm_response(
             await _relay_async_completion(
@@ -5221,7 +5226,8 @@ async def _call_fallback_candidate_async(
                     tools=retry_tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
+                    base_url=retry_destination.base_url, task=task,
+                    api_mode=retry_destination.api_mode)
                 try:
                     return _validate_llm_response(
                         await _relay_async_completion(
@@ -8370,6 +8376,7 @@ def _build_call_kwargs(
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
     task: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -8445,8 +8452,22 @@ def _build_call_kwargs(
             from hermes_cli.providers import nous_api_mode
 
             _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
+        # Anthropic Messages wire (api_mode=anthropic_messages) requires
+        # max_tokens as a mandatory field. ``_is_anthropic_compat_endpoint()``
+        # only recognizes MiniMax and ``/anthropic`` URLs, so a custom
+        # anthropic_messages endpoint (e.g. ``hub.test.utown.io``) silently
+        # dropped the caller's max_tokens — the Anthropic shim then fell
+        # back to its 128000 default and exceeded the provider's output
+        # ceiling, raising a token_limit 400 the classifier misread as input
+        # overflow. Honor the explicit api_mode so the mandatory field
+        # survives on every Anthropic-Messages endpoint, not just the
+        # URL-shaped ones.
+        _is_anthropic_messages_api = (
+            str(api_mode or "").strip().lower() == "anthropic_messages"
+        )
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
+            or _is_anthropic_messages_api
             or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
@@ -9327,7 +9348,8 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url, task=task)
+        base_url=_base_info or resolved_base_url, task=task,
+        api_mode=resolved_api_mode)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 
@@ -10107,7 +10129,8 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_client_base or resolved_base_url, task=task)
+        base_url=_client_base or resolved_base_url, task=task,
+        api_mode=resolved_api_mode)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(request_provider, _client_base):

@@ -473,6 +473,51 @@ class TestBuildCallKwargsMaxTokens:
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
 
+    def test_keeps_max_tokens_on_custom_anthropic_messages_endpoint(self):
+        """A custom provider whose ``api_mode`` is ``anthropic_messages`` must
+        keep ``max_tokens`` even when the URL has no ``/anthropic`` path segment.
+
+        The Anthropic Messages wire requires ``max_tokens`` as a mandatory
+        field. ``_is_anthropic_compat_endpoint()`` only recognizes MiniMax or
+        URLs containing ``/anthropic``, so a custom ``anthropic_messages``
+        endpoint (e.g. ``hub.test.utown.io``) silently dropped ``max_tokens``
+        — the Anthropic shim then fell back to its 128000 default, exceeding
+        the provider's output ceiling and raising a ``token_limit`` 400 that
+        the error classifier misread as input overflow ("Cannot compress
+        further"). Passing ``api_mode`` through lets the mandatory field
+        survive on every Anthropic-Messages endpoint, not just the URL-shaped
+        ones.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=64,
+            base_url="https://hub.test.utown.io/v1",
+            api_mode="anthropic_messages",
+        )
+        assert kwargs["max_tokens"] == 64
+        assert "max_completion_tokens" not in kwargs
+
+    def test_drops_max_tokens_on_custom_chat_completions_endpoint(self):
+        """Regression guard: a ``chat_completions`` custom endpoint keeps the
+        #34845 default of omitting ``max_tokens`` (providers use their model
+        max). Only ``anthropic_messages`` opts back in."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=64,
+            base_url="https://hub.test.utown.io/v1",
+            api_mode="chat_completions",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
 
     # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
 
