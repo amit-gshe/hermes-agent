@@ -204,7 +204,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, groupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1282,6 +1282,59 @@ test('disband: removes only this membership, room log, workspace, and needs-you 
   assert.equal(durable.Keep.members[0].connectionId, 'remote-1')
 })
 
+test('disband: an empty rendered roster cannot leave a metadata-only group row', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.$botMeta.set({ builder: { groups: ['Remote'], group: 'Remote' } })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(gc.$groupChats.get().Remote, undefined, 'room record is deleted')
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get().builder.group, null)
+  assert.equal(
+    JSON.stringify(gc.groupChatNames(gc.$botMeta.get(), gc.$groupChats.get())),
+    JSON.stringify([]),
+    'stale bot metadata cannot reconstruct a deleted zero-member row'
+  )
+})
+
+test('disband: an empty rendered roster recovers the exact source-qualified metadata owner', async () => {
+  const gc = load(() => '(pass)')
+  const remote = {
+    name: 'builder',
+    connectionId: 'remote-1',
+    connectionKind: 'remote',
+    sourceScoped: true,
+    remoteSource: true,
+    route: {
+      connectionId: 'remote-1',
+      mode: 'remote',
+      profile: 'builder',
+      targetProfile: 'builder'
+    }
+  }
+
+  gc.$lastRoster.set([remote])
+  gc.$botMeta.set({
+    builder: { groups: ['Keep'], group: 'Keep' },
+    'remote-1::builder': { groups: ['Remote'], group: 'Remote' }
+  })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(JSON.stringify(gc.$botMeta.get()['remote-1::builder'].groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get()['remote-1::builder'].group, null)
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify(['Keep']))
+  assert.equal(gc.$botMeta.get().builder.group, 'Keep', 'same-named local metadata is untouched')
+})
+
 test('disband: skips source-qualified remote members instead of mutating same-named local metadata', async () => {
   const gc = load(() => '(pass)')
   gc.$botMeta.set({ builder: { groups: ['Keep'], group: 'Keep' } })
@@ -1472,6 +1525,40 @@ test('stranded harvest: a timed-out turn whose reply landed late posts into the 
   assert.equal(log[0].from.name, 'research')
   assert.match(log[0].text, /delivered late/)
   assert.equal(gc.$groupChats.get().Late.stranded.research, undefined, 'marker consumed')
+})
+
+test('stranded harvest: a rescued reply prefers the substantive answer over a trailing synthetic (pass)', async () => {
+  const gc = load(() => '(pass)')
+
+  // #94376 class bug at the second call site: the late-landing turn ends
+  // with a Codex intent-ack continuation nudge that gets a synthetic
+  // "(pass)" — the harvest must still surface the substantive answer that
+  // preceded it, not the trailing pass.
+  gc.updateGroupChat('Rescue', r => {
+    r.stranded = { research: 0 }
+    r.sessions = { research: 'sid-research' }
+    return r
+  })
+  gc.sessions.set('sid-research', {
+    stored: 'sid-research',
+    runtime: 'rt-research',
+    profile: 'research',
+    title: 'Group: Rescue',
+    messages: [
+      { role: 'user', content: 'the turn prompt' },
+      { role: 'assistant', content: 'Here is the full research result, delivered late.' },
+      { role: 'user', content: '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]' },
+      { role: 'assistant', content: '(pass)' }
+    ]
+  })
+
+  await gc.harvestStrandedGroupReply('Rescue', { name: 'research', title: '' })
+
+  const log = roomLog(gc, 'Rescue')
+  assert.equal(log.length, 1)
+  assert.equal(log[0].from.name, 'research')
+  assert.match(log[0].text, /delivered late/)
+  assert.equal(gc.$groupChats.get().Rescue.stranded.research, undefined, 'marker consumed')
 })
 
 test('stranded + still busy: the round loop never re-submits into a member whose harvest just confirmed they are still running', async () => {

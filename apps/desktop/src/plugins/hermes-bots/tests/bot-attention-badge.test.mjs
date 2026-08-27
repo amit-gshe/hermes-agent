@@ -127,11 +127,17 @@ test('hooks: relay delivery and group member turns note/clear attention', () => 
     pluginSource.indexOf('function startBotRelay')
   )
   assert.match(drain, /clearBotAttention\(attentionKey\)/)
-  assert.match(drain, /noteBotAttention\(attentionKey, error\?\.message \|\| error\)/)
+  // #93091: the drain prefers the typed reason from bot_relay.deliver's
+  // error.data over free-text re-parsing, and forwards it to the reply.
+  assert.match(drain, /noteBotAttention\(attentionKey, reason \|\| error\?\.message \|\| error\)/)
+  assert.match(drain, /\.\.\.\(reason \? \{ reason \} : \{\}\)/)
 
   // Group member turn boundary: failure notes under the member key; a real
-  // reply clears it.
-  assert.match(pluginSource, /noteBotAttention\(groupMemberKey\(member\), error\?\.message \|\| error\)/)
+  // reply clears it. Typed gateway reasons take precedence over text parsing.
+  assert.match(
+    pluginSource,
+    /noteBotAttention\(groupMemberKey\(member\), reason \|\| error\?\.message \|\| error\)/
+  )
   assert.match(pluginSource, /clearBotAttention\(groupMemberKey\(member\)\)/)
 })
 

@@ -446,6 +446,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
+    _compressed_summary INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
@@ -732,6 +733,9 @@ FTS_CJK_STALE_KEY = "fts_cjk_stale"
 # have been written while those triggers were absent, so merely recreating
 # them would preserve an unknown index gap.
 FTS_STALE_KEY = "fts_stale"
+
+# Durable diagnostic for stale FTS recovery blocked across process restarts.
+FTS_REBUILD_DEFERRAL_KEY = "fts_rebuild_deferral"
 
 
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
