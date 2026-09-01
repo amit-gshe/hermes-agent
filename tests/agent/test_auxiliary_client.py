@@ -1334,8 +1334,9 @@ class TestVisionClientFallback:
             stop_reason="end_turn",
             usage=SimpleNamespace(input_tokens=3, output_tokens=4),
         )
+        # No `.stream` on the shim client: the adapter must aggregate through
+        # create(stream=True) and preprocess the raw SSE events itself.
         messages_api = SimpleNamespace(
-            stream=MagicMock(return_value=_FakeAnthropicStream(final_message)),
             create=MagicMock(return_value=_FakeAnthropicRawStream(final_message)),
         )
         real_client = SimpleNamespace(messages=messages_api)
@@ -2888,14 +2889,24 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 
         captured = {}
 
+        ok_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
         class _Messages:
             def create(self, **kwargs):
                 captured.update(kwargs)
-                return SimpleNamespace(
-                    content=[SimpleNamespace(type="text", text="ok")],
-                    stop_reason="end_turn",
-                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
-                )
+                return ok_message
+
+            def stream(self, **kwargs):
+                # Current adapter contract: prefer messages.stream() ->
+                # get_final_message() (the main-turn path); create() is only
+                # the stream-unavailable fallback. Kwarg-translation
+                # assertions must read the call the adapter actually makes.
+                captured.update(kwargs)
+                return _FakeAnthropicStream(ok_message)
 
         real_client = SimpleNamespace(messages=_Messages())
         return _AnthropicCompletionsAdapter(real_client, model), captured
