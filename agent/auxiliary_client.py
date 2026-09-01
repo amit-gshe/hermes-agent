@@ -5547,7 +5547,8 @@ def _call_fallback_candidate_sync(
         temperature=temperature, max_tokens=fallback_max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
         extra_body=fallback_extra_body, reasoning_config=reasoning_config,
-        base_url=destination.base_url, task=task)
+        base_url=destination.base_url, task=task,
+        api_mode=destination.api_mode)
     if fallback_max_tokens is not None and max_tokens is None:
         fb_kwargs.update(
             auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model)
@@ -5615,7 +5616,8 @@ def _call_fallback_candidate_sync(
                     tools=retry_tools, timeout=effective_timeout,
                     extra_body=retry_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
+                    base_url=retry_destination.base_url, task=task,
+                    api_mode=retry_destination.api_mode)
                 if retry_max_tokens is not None and max_tokens is None:
                     retry_kwargs.update(
                         auxiliary_max_tokens_param(
@@ -9151,6 +9153,19 @@ def _build_call_kwargs(
             _provider_norm == "openrouter"
             or base_url_host_matches(_effective_base, "openrouter.ai")
         )
+        # Anthropic Messages wire (api_mode=anthropic_messages) requires
+        # max_tokens as a mandatory field. ``_is_anthropic_compat_endpoint()``
+        # only recognizes MiniMax and ``/anthropic`` URLs, so a custom
+        # anthropic_messages endpoint (e.g. ``hub.test.utown.io``) silently
+        # dropped the caller's max_tokens — the Anthropic shim then fell
+        # back to its 128000 default and exceeded the provider's output
+        # ceiling, raising a token_limit 400 the classifier misread as input
+        # overflow. Honor the explicit api_mode so the mandatory field
+        # survives on every Anthropic-Messages endpoint, not just the
+        # URL-shaped ones.
+        _is_anthropic_messages_api = (
+            str(api_mode or "").strip().lower() == "anthropic_messages"
+        )
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_anthropic_messages_api
@@ -10226,7 +10241,8 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url, task=task)
+        base_url=_base_info or resolved_base_url, task=task,
+        api_mode=resolved_api_mode)
     if fast_compression_cap is not None and max_tokens is None:
         # Normal auxiliary calls intentionally omit a cap on most
         # OpenAI-compatible/local providers.  This is the narrow exception:
