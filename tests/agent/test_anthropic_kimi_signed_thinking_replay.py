@@ -50,13 +50,15 @@ def test_moonshot_keeps_signed_thinking():
 
 
 
-def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
-    """A Kimi-family model slug replayed through a non-Kimi gateway hostname
-    keeps its thinking blocks — upstream Kimi still enforces its replay
-    semantics no matter what host fronts it (hermes-agent#13848, #17057).
-    Covers both the named and bare Coding Plan slugs."""
+def test_kimi_model_name_on_foreign_gateway_gets_generic_semantics():
+    """A Kimi-family model slug replayed through a foreign gateway hostname
+    gets GENERIC third-party replay semantics (signed thinking stripped),
+    not Kimi preservation — endpoint semantics key on official Kimi/Moonshot
+    domains only (model-name-based endpoint detection was deliberately
+    removed: custom gateways with Kimi-looking slugs must receive the
+    'thinking' kwarg and must not be hijacked into Kimi replay handling)."""
     for model in ("kimi-k2.5", "k3"):
-        assert _thinking_on_replay(DEEPSEEK, model=model), model
+        assert not _thinking_on_replay(DEEPSEEK, model=model), model
 
 
 
