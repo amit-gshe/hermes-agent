@@ -5109,6 +5109,7 @@ def _retry_same_provider_sync(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers (e.g. Copilot's
     # ``x-initiator: user``) across the rebuilt-client retry — dropping them
@@ -5184,6 +5185,7 @@ async def _retry_same_provider_async(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers across the rebuilt-client
     # retry — see the sync variant above (#60293).
@@ -5689,7 +5691,8 @@ async def _call_fallback_candidate_async(
         temperature=temperature, max_tokens=max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=destination.base_url, task=task)
+        base_url=destination.base_url, task=task,
+        api_mode=destination.api_mode)
     try:
         return _validate_llm_response(
             await _relay_async_completion(
@@ -5735,7 +5738,8 @@ async def _call_fallback_candidate_async(
                     tools=retry_tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
+                    base_url=retry_destination.base_url, task=task,
+                    api_mode=retry_destination.api_mode)
                 try:
                     return _validate_llm_response(
                         await _relay_async_completion(
@@ -9061,6 +9065,7 @@ def _build_call_kwargs(
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
     task: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -9148,6 +9153,7 @@ def _build_call_kwargs(
         )
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
+            or _is_anthropic_messages_api
             or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
@@ -10085,6 +10091,18 @@ def _call_llm_impl(
         task, provider, model, base_url, api_key)
     if api_mode:
         resolved_api_mode = api_mode
+    if not resolved_api_mode:
+        # Auto-resolved auxiliary tasks (no auxiliary.<task> config block)
+        # inherit api_mode from the main runtime so wire-format-specific
+        # request shaping still applies — e.g. anthropic_messages endpoints
+        # require max_tokens as a mandatory field, and _build_call_kwargs
+        # only forwards it when api_mode is known. Without this, a custom
+        # anthropic_messages provider resolved via the auto chain dropped
+        # the caller's max_tokens and fell back to the 128000 default,
+        # exceeding the provider's output ceiling (#34845 regression).
+        _rt = _normalize_main_runtime(main_runtime)
+        if _rt.get("api_mode"):
+            resolved_api_mode = _rt["api_mode"]
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
@@ -10940,6 +10958,13 @@ async def _async_call_llm_impl(
     main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if not resolved_api_mode:
+        # Auto-resolved auxiliary tasks inherit api_mode from the main
+        # runtime — see the sync _call_llm_impl for the full rationale
+        # (anthropic_messages endpoints require max_tokens; without this
+        # the auto chain dropped it and fell back to the 128000 default).
+        if main_runtime.get("api_mode"):
+            resolved_api_mode = main_runtime["api_mode"]
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider
@@ -11039,7 +11064,8 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_client_base or resolved_base_url, task=task)
+        base_url=_client_base or resolved_base_url, task=task,
+        api_mode=resolved_api_mode)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
