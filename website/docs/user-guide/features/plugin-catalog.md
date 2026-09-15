@@ -81,6 +81,28 @@ hermes plugins enable <name>
 The install prompt shows the entry's capability summary — declared tools,
 hooks, and required env vars — before anything is cloned.
 
+The catalog name and the plugin's own manifest name can differ; `hermes
+plugins install` prints the installed name, and `enable` takes that one. For
+example the `touchdesigner` entry (a portable Agent Plugins v1 package that
+bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
+`td`, kept short so its generated MCP tool names stay under provider
+function-name limits:
+
+```bash
+hermes plugins install touchdesigner
+hermes plugins enable td
+```
+
+Portable packages can also carry a stdio MCP server. The `snyk` entry pins the
+Snyk CLI (`npx -y snyk@<version> mcp`) and bundles the `snyk-security-scan`
+skill, so one install gives Hermes code, dependency, container and IaC scanning
+plus the workflow for using it; the catalog name and manifest name match:
+
+```bash
+hermes plugins install snyk
+hermes plugins enable snyk
+```
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
@@ -128,8 +150,9 @@ in short, an entry must be:
 3. **Released** — the repo has real releases/tags, not just a default branch.
 4. **Passing validation** — the catalog validation GitHub Action is green on
    the PR (schema, SHA format, reachability).
-5. **Pinned to settled code** — the pinned SHA is at least **2 weeks old**, so
-   the catalog never points at code pushed moments before review.
+5. **Not self-updating** — the catalog build must not download and replace
+   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
+   `hermes plugins update <name>`).
 
 Pin updates (bumping `sha` to a newer commit) follow the same PR + review
 process.

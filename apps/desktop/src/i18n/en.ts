@@ -11,24 +11,27 @@ export const en: Translations = {
     retry: 'Try again',
     grant: 'Reconnect',
     connected: 'Connected',
+    checking: 'Checking your apps…',
+    waitingSignIn: 'Waiting for you to finish signing in…',
+    notConnected: 'Not connected',
+    notAvailable: 'Not available',
+    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
+    startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',
     failed: 'Could not connect',
     needsAuth: 'Access expired',
     opening: 'Opening sign-in…',
-    waiting: 'Finish connecting in your browser…',
+    waiting: 'Waiting for your browser…',
     timeout: 'Still waiting for authorization.',
-    keepWaiting: 'Keep waiting',
     refresh: 'Refresh status',
     statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
+    connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
     ownerMissing: 'Reopen this conversation to manage its connections.',
     search: 'Find an app',
     empty: 'No matching apps',
-    continue: 'Continue in chat',
-    continueBusy: 'Waiting for this turn to finish',
-    continueFailed: 'Could not continue. Try again.',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
     execution: 'Connector tools'
   },
@@ -213,7 +216,10 @@ export const en: Translations = {
       errorTitle: 'MCP server unreachable',
       errorMessage: name => `${name} MCP failed its health check.`,
       signIn: 'Sign in',
-      view: 'View'
+      view: 'View',
+      disable: 'Disable',
+      disabledMessage: name => `${name} MCP disabled. Re-enable it any time from Capabilities → MCP.`,
+      disableFailed: name => `Could not disable ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
@@ -246,7 +252,11 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable'
+      unavailable: 'Voice unavailable',
+      liveEnded: 'Live voice session ended',
+      liveError: 'Live voice',
+      liveDelegationFailed: 'Could not hand the request to Hermes',
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -715,6 +725,13 @@ export const en: Translations = {
       terminalFontPlaceholder: 'MesloLGS NF or a CSS font stack',
       terminalFontPreview: 'Glyph preview',
       terminalFontReset: 'Use default',
+      chatFontTitle: 'Chat Font',
+      chatFontDesc:
+        'Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme\'s font.',
+      chatFontPlaceholder: 'OpenDyslexic or a CSS font stack',
+      chatFontPreview: 'Preview',
+      chatFontSample: 'The quick brown fox jumps over the lazy dog. 0123456789',
+      chatFontReset: 'Use theme font',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window, text and all. Tuned separately for light and dark.',
       translucencyGlassDesc:
@@ -745,10 +762,11 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
       tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
-      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
+      toursDesc:
+        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -770,6 +788,7 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
       installTitle: 'Install from VS Code',
       installDesc:
@@ -823,6 +842,30 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
+    uninstallSection: {
+      dangerZone: 'Danger zone',
+      confirmUninstall: 'Confirm uninstall',
+      uninstallHermes: 'Uninstall Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: 'Warm bot backends',
+      warmBotBackendsTitle: 'Warm Bot Backends',
+      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
+      backendIdleTimeoutTitle: 'Backend Idle Timeout'
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      deleteEndpoint: 'Delete endpoint',
+      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
+      emptyTitle: 'No custom endpoints',
+      namePlaceholder: 'Axet Proxy',
+      contextPlaceholder: 'Auto'
+    },
+    computerUse: {
+      accessibility: 'Accessibility',
+      screenRecording: 'Screen Recording',
+      driverHealth: 'Driver health'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `Version ${value}`,
@@ -886,7 +929,8 @@ export const en: Translations = {
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: 'Max preview / image load size in megabytes'
+      attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      showOptions: 'Show options'
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',
@@ -1268,10 +1312,14 @@ export const en: Translations = {
       setToMain: 'Set to main',
       change: 'Change',
       autoUseMain: 'auto · use main model',
+      inheritMainEffort: 'inherit · main model effort',
       providerDefault: '(provider default)',
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moaTitle: 'Mixture of Agents',
+      moaPreset: 'Preset',
+      moaAggregator: 'Aggregator',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },
@@ -1280,6 +1328,9 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         review: { label: 'Review', hint: '/review reviewer subagent' },
+        triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
+        kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
+        profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
     },
@@ -1908,6 +1959,10 @@ export const en: Translations = {
     restartGateway: 'Restart gateway',
     openBrowser: 'Open browser',
     gatewayRestartFailed: 'Gateway restart failed.',
+    sharedGatewayRestartTitle: 'Restart the shared gateway?',
+    sharedGatewayRestartDescription: bots => `All bots on this device reconnect: ${bots}`,
+    sharedGatewayRestartConfirm: 'Restart all',
+    sharedGatewayRestarted: count => `Shared gateway restarted (${count} ${count === 1 ? 'bot' : 'bots'})`,
     updateHermes: 'Update Hermes',
     reloadWindow: 'Reload window',
     actionRunning: 'running',
@@ -2001,6 +2056,7 @@ export const en: Translations = {
     },
     unknown: 'Unknown',
     hintPendingRestart: 'Restart the gateway from the status bar to apply this change.',
+    sharedListenerUrl: 'Served on the shared gateway listener at',
     hintGatewayStopped: 'Start the gateway from the status bar to connect.',
     credentialsSet: 'Credentials set',
     needsSetup: 'Needs setup',
@@ -2027,6 +2083,8 @@ export const en: Translations = {
     restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
     restartToReconnect: 'New credentials take effect after a gateway restart.',
+    appliedLive: 'Applied to the running gateway.',
+    connectingLive: 'The running gateway is connecting with the new credentials.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -2792,6 +2850,13 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
+    voiceEngine: 'Voice chat engine',
+    voiceEngineChained: 'Speech-to-text + Hermes voice',
+    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
+    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
+    voiceEngineChangeFailed: 'Could not change the voice chat engine',
+    voiceEngineChainedShort: 'speech-to-text',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -2832,6 +2897,7 @@ export const en: Translations = {
     queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
+    hiddenQueued: 'Setup note',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
@@ -3157,6 +3223,16 @@ export const en: Translations = {
     }
   },
 
+  handoffTour: {
+    profileTitle: 'Your first task runs on the default profile',
+    profileText:
+      'This rail switches profiles. The one lit up now is default, where the task session lives. The other one is the setup profile, where the welcome chat lives.',
+    sessionsTitle: 'Each profile keeps its own sessions',
+    sessionsText:
+      'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
+    stayTitle: 'Hermes is one click away',
+    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
+  },
   guidedGreeting: {
     line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
     nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
@@ -3861,22 +3937,18 @@ export const en: Translations = {
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     mcpSetup: {
-      installTitle: server => `Add the ${server} MCP server?`,
-      enableTitle: server => `Enable the ${server} MCP server?`,
-      authorizeTitle: server => `Authorize the ${server} MCP server?`,
+      installTitle: 'Add MCP servers',
+      enableTitle: 'Enable MCP servers',
+      authorizeTitle: 'Authorize MCP servers',
       installAction: 'Install',
       enableAction: 'Enable',
       authorizeAction: 'Authorize',
-      decline: 'Not now',
-      declined: 'Declined',
       installed: server => `Installed ${server}`,
       enabled: server => `Enabled ${server}`,
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
-      unanswered: 'No response',
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
       notInCatalog: server => `“${server}” is not in the MCP catalog`,
-      catalogSource: 'From the Nous-approved catalog',
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',
@@ -3893,6 +3965,19 @@ export const en: Translations = {
       copyQuery: 'Copy query',
       copyFile: 'Copy file',
       copyPath: 'Copy path',
+      failedCalls: (count: number) => `${count} tool call${count === 1 ? '' : 's'} failed`,
+      skillActivity: {
+        loading: 'Loading skill',
+        loaded: 'Loaded skill',
+        loadFailed: 'Failed to load skill',
+        readingResource: 'Reading skill resource',
+        readResource: 'Read skill resource',
+        resourceFailed: 'Failed to read skill resource',
+        listing: 'Listing skills',
+        listed: 'Listed skills',
+        listFailed: 'Failed to list skills',
+        unavailable: 'Skill result unavailable'
+      },
       outputAlt: 'Tool output',
       rawResponse: 'Raw response',
       copyActivity: 'Copy activity',
@@ -3904,6 +3989,7 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      resultUnavailable: 'Result unavailable',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',
@@ -4075,6 +4161,8 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    pastedContent: 'Pasted content',
+    pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
