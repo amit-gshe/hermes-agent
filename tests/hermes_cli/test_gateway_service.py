@@ -359,6 +359,26 @@ class TestGeneratedSystemdUnits:
         monkeypatch.delenv("LD_LIBRARY_PATH")
         assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
 
+    def test_user_unit_carries_the_terminal_proxy_env_in_both_casings(self, monkeypatch, tmp_path):
+        """The user manager never reads ~/.zshrc, so a gateway started by systemd runs with no proxy
+        while the same Hermes in a terminal goes through one; the unit is the only place to hand it over."""
+        # Absent-env branch falls back to the installed unit: keep the host's real exports out of both.
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        # A zsh export is lowercase; the carry must not depend on the spelling the installing shell used.
+        monkeypatch.setenv("https_proxy", "http://172.16.2.210:8088")
+        monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        # httpx/aiohttp read the uppercase names, curl/git spawned by the terminal tool the lowercase ones.
+        assert 'Environment="HTTPS_PROXY=http://172.16.2.210:8088"' in unit
+        assert 'Environment="https_proxy=http://172.16.2.210:8088"' in unit
+        assert 'Environment="NO_PROXY=localhost,127.0.0.1"' in unit
+        # Unset variables stay unset: an inherited proxy must not be invented for another scheme.
+        assert "HTTP_PROXY" not in unit and "ALL_PROXY" not in unit
 
     def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Regression for the multi-profile gateway restart-loop flap (#48700):
@@ -1468,6 +1488,22 @@ class TestSystemUnitHermesHome:
 
         assert gateway_cli.systemd_unit_is_current(system=False)
         assert 'LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib' in gateway_cli.generate_systemd_unit(system=False)
+
+    def test_installed_unit_keeps_the_proxy_env_when_the_shell_lacks_it(self, monkeypatch, tmp_path):
+        """The unit is regenerated and compared on every start/restart/status; a later shell without the
+        exports (ssh, cron, sudo strips proxy vars) must see the installed unit as current, not "repair"
+        the proxy route away and silently send the gateway back to a direct connect."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("http_proxy", "http://172.16.2.210:8088")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+        monkeypatch.delenv("http_proxy")
+
+        assert gateway_cli.systemd_unit_is_current(system=False)
+        assert 'HTTP_PROXY=http://172.16.2.210:8088' in gateway_cli.generate_systemd_unit(system=False)
 
     def test_system_unit_remaps_caller_home_ld_library_path_components(self, monkeypatch):
         """#14613: under sudo the caller's /root/... library dirs are unreadable to the target

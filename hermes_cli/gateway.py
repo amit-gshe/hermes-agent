@@ -3017,6 +3017,40 @@ def _ld_library_path_line(system: bool, target_home_dir: str | None = None) -> s
     return _systemd_env_line("LD_LIBRARY_PATH", ":".join(components)) if components else ""
 
 
+# Proxy variables the terminal shell exports. A systemd *user* service is spawned by the user
+# manager, which never reads ~/.zshrc / ~/.bashrc, so without carrying them the gateway process has
+# no proxy at all: platform adapters (resolve_proxy_url) and model traffic (process_bootstrap) both
+# fall back to a direct connect while the very same Hermes in a terminal goes through the proxy.
+_PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
+def _proxy_env_lines(system: bool) -> str:
+    """Carry the caller's HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY into the unit, both casings.
+
+    One resolved value per variable, emitted under both spellings: the generated text must not depend
+    on which case the installing shell used (a lowercase export in one shell and uppercase in the next
+    would otherwise churn the definition on every start/restart/status), and the consumers split by
+    library — httpx/aiohttp read the uppercase names, while curl/git spawned by the terminal tool read
+    the lowercase ones the login shell exported.
+
+    The installed unit is the fallback source, exactly as for :func:`_ld_library_path_line`: ``ssh``,
+    ``cron`` and ``sudo`` (which strips proxy vars by default) reach here without the exports, and such
+    a shell must not be able to "repair" the proxy route out of the unit.
+    """
+    unit_path = get_systemd_unit_path(system=system)
+    lines: list[str] = []
+    for name in _PROXY_ENV_NAMES:
+        value = (os.environ.get(name) or os.environ.get(name.lower()) or "").strip()
+        if not value:
+            value = next(
+                (v for v in (_unit_environment_value(unit_path, n) for n in (name, name.lower())) if v), "")
+        if not value:
+            continue
+        lines.append(_systemd_env_line(name, value))
+        lines.append(_systemd_env_line(name.lower(), value))
+    return "".join(lines)
+
+
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
     """Remap the current HERMES_HOME (root's, under sudo) to the target user's equivalent:
     ``/root/.hermes[/profiles/x]`` → ``/home/alice/.hermes[/profiles/x]``; custom paths kept as-is."""
@@ -3229,14 +3263,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
             f'Environment="LOGNAME={username}"\n'
-        ) + _ld_library_path_line(system=True, target_home_dir=home_dir)
+        ) + _ld_library_path_line(system=True, target_home_dir=home_dir) + _proxy_env_lines(system=True)
         wanted_by = "multi-user.target"
     else:
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
         identity_lines = ordering_lines = ""
-        env_lines = _ld_library_path_line(system=False)
+        env_lines = _ld_library_path_line(system=False) + _proxy_env_lines(system=False)
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
